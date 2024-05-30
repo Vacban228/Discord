@@ -1,68 +1,44 @@
-
 import discord
 from discord.ext import commands
-import asyncio
-import logging
-
-# Настройка логирования
-logging.basicConfig(level=logging.INFO)
+from datetime import timedelta
+import re
 
 intents = discord.Intents.default()
-intents.members = True  # Необходимо для отслеживания участников
-intents.guilds = True  # Необходимо для получения информации о серверах
-intents.messages = True  # Необходимо для отправки и обработки сообщений
-intents.message_content = True  # Необходимо для доступа к содержимому сообщений
+intents.members = True
+intents.message_content = True
 
 bot = commands.Bot(command_prefix='/', intents=intents)
 
-# Словарь для хранения социального рейтинга участников
+# Социальный рейтинг участников
 social_ratings = {}
 
-# Список русских матов
+# Список запрещенных слов (список содержит основные русские маты)
 forbidden_words = [
-    'хуй', 'пизда', 'ебать', 'блять', 'пиздец', 'сука', 'нахуй', 'ебаный', 'ебанутый', 'еблан', 'выебать', 'выебон',
-    'ебло', 'ебать-колотить', 'охуеть', 'хуево', 'хуёво', 'охуенный', 'пиздато', 'пиздатый', 'пиздёж', 'пидорас',
-    'пидор', 'пидорасина', 'гандон', 'манда', 'мандавошка', 'хуесос', 'хуйня', 'хуйню', 'хуёк'
+    'блять', 'блядь', 'сука', 'хуй', 'пизда', 'ебать', 'мудак', 'гандон', 'пидор', 'ебло',
+    'жопа', 'хуев', 'мразь', 'уебок', 'уебище', 'хуесос', 'ебаный', 'ебанутый', 'еблан', 'хуило',
+    'пидорас', 'пиздец', 'пизду', 'выблядок', 'пидар', 'хуеплет', 'хуета', 'ебучий', 'соси', 'залупа'
 ]
 
-# Словарь для отслеживания времени последнего сообщения пользователя (для спама)
-last_message_times = {}
-spam_threshold = 5  # Порог времени (в секундах) между сообщениями для определения спама
-
-initial_rating = 1000
-penalty_points = 150
-
-async def restore_rating(user_id, member):
-    await asyncio.sleep(86400)  # Ждем 1 день (86400 секунд)
-    new_rating = max(100, int(social_ratings[user_id] * 0.85))
-    social_ratings[user_id] = new_rating
-    channel = discord.utils.get(member.guild.text_channels, name='for-boat-tester')
-    if channel:
-        await channel.send(f'{member.mention}, ваш социальный рейтинг восстановлен до {new_rating} после окончания тайм-аута.')
+# Функция для проверки спама
+def is_spam(message, user_messages, threshold=5, time_frame=10):
+    now = message.created_at
+    user_messages = [msg for msg in user_messages if (now - msg.created_at).seconds < time_frame]
+    user_messages.append(message)
+    return len(user_messages) > threshold, user_messages
 
 @bot.event
 async def on_ready():
-    print(f'Logged in as {bot.user.name}')
-    # Отправка сообщения только в текстовый канал for-boat-tester на всех серверах
-    for guild in bot.guilds:
-        channel = discord.utils.get(guild.text_channels, name='for-boat-tester')
-        if channel:
-            try:
-                await channel.send("Бот запущен и готов к работе! Всем выдаются 1000 очков социального рейтинга.")
-            except discord.Forbidden:
-                print(f'Нет прав на отправку сообщений в канал {channel.name} на сервере {guild.name}')
+    print(f'Logged in as {bot.user}')
+    channel = discord.utils.get(bot.get_all_channels(), name='for-boat-tester')
+    if channel:
+        await channel.send('Бот запущен и готов к работе!')
+        for member in bot.get_all_members():
+            social_ratings[member.id] = 1000
+        await channel.send('Всем участникам выдано 1000 очков соц. рейтинга.')
 
 @bot.event
 async def on_member_join(member):
-    # Выдать новому участнику 1000 очков рейтинга
-    social_ratings[member.id] = initial_rating
-    channel = discord.utils.get(member.guild.text_channels, name='for-boat-tester')
-    if channel:
-        try:
-            await channel.send(f'{member.mention} присоединился к серверу! Ему выдано 1000 очков социального рейтинга.')
-        except discord.Forbidden:
-            print(f'Нет прав на отправку сообщений в канал {channel.name} на сервере {member.guild.name}')
-    await member.send(f'Добро пожаловать на сервер! Вам выдано 1000 очков социального рейтинга.')
+    social_ratings[member.id] = 1000
 
 @bot.event
 async def on_message(message):
@@ -70,64 +46,32 @@ async def on_message(message):
         return
 
     user_id = message.author.id
-    now = message.created_at.timestamp()
-
-    # Инициализация рейтинга для новых пользователей
     if user_id not in social_ratings:
-        social_ratings[user_id] = initial_rating
+        social_ratings[user_id] = 1000
 
-    # Проверка на использование мата
     if any(word in message.content.lower() for word in forbidden_words):
-        social_ratings[user_id] -= penalty_points
-        channel = discord.utils.get(message.guild.text_channels, name='for-boat-tester')
-        if channel:
-            await channel.send(f'{message.author.mention} - -{penalty_points} очков социального рейтинга за использование запрещённых слов.')
+        social_ratings[user_id] -= 150
+        await message.channel.send(f'{message.author.mention} -150 соц. рейтинга за использование запрещенных слов.')
 
-    # Проверка на спам
-    if user_id in last_message_times:
-        time_diff = now - last_message_times[user_id]
-        if time_diff < spam_threshold:
-            social_ratings[user_id] -= penalty_points
-            channel = discord.utils.get(message.guild.text_channels, name='for-boat-tester')
-            if channel:
-                await channel.send(f'{message.author.mention} - -{penalty_points} очков социального рейтинга за спам.')
+    user_messages = getattr(message.author, 'recent_messages', [])
+    is_spamming, user_messages = is_spam(message, user_messages)
+    setattr(message.author, 'recent_messages', user_messages)
 
-    last_message_times[user_id] = now
+    if is_spamming:
+        social_ratings[user_id] -= 150
+        await message.channel.send(f'{message.author.mention} -150 соц. рейтинга за спам.')
 
-    # Проверка на нулевой рейтинг
     if social_ratings[user_id] <= 0:
-        # Применение тайм-аута
-        try:
-            await message.author.edit(timeout=discord.utils.utcnow() + timedelta(days=1), reason='Нулевой социальный рейтинг')
-            channel = discord.utils.get(message.guild.text_channels, name='for-boat-tester')
-            if channel:
-                await channel.send(f'{message.author.mention} получил тайм-аут на 1 день за достижение нулевого социального рейтинга.')
-            await restore_rating(user_id, message.author)
-        except discord.Forbidden:
-            print(f'Нет прав для выдачи тайм-аута пользователю {message.author.name}')
-        except discord.HTTPException as e:
-            print(f'Ошибка при выдаче тайм-аута пользователю {message.author.name}: {e}')
+        social_ratings[user_id] = max(1000 - 150 * len(user_messages), 0)
+        await message.author.edit(timed_out_until=discord.utils.utcnow() + timedelta(days=1), reason='Нулевой социальный рейтинг')
+        await message.channel.send(f'{message.author.mention} получил тайм-аут на 1 день за нулевой социальный рейтинг.')
 
     await bot.process_commands(message)
 
-# Команда для проверки рейтинга
 @bot.command()
 async def show_soc_rating(ctx, member: discord.Member = None):
-    if ctx.channel.name == 'for-boat-tester':
-        if member is None:
-            member = ctx.author
-        await ctx.send(f'{member.mention}, ваш социальный рейтинг: {social_ratings.get(member.id, initial_rating)}')
-    else:
-        await ctx.send('Эту команду можно использовать только в канале for-boat-tester.')
+    member = member or ctx.author
+    rating = social_ratings.get(member.id, 'Неизвестно')
+    await ctx.send(f'Соц. рейтинг {member.mention}: {rating}')
 
-async def main():
-    while True:
-        try:
-            await bot.start('MTI0NTQzMzY5NzUyMDMyMDUzMg.GSJmOi.N_eQ-O5cUlOZjfzccK9d0-zvIpK0vwhA7rCwCg')
-        except Exception as e:
-            logging.error(f'Bot crashed with exception: {e}')
-            await bot.close()
-            await asyncio.sleep(10)  # Ждём 10 секунд перед перезапуском
-
-if __name__ == '__main__':
-    asyncio.run(main())
+bot.run('MTI0NTQzMzY5NzUyMDMyMDUzMg.GUYjkm.ZRdslv1Ka403TYfDtqd_BKZOuLsEZrNqH8_1IE')
